@@ -83,7 +83,14 @@ func main() {
 }
 func start_container(mac_addr string) {
 	// change the parameter if neccessry
-	cmd := "docker run -i -t -v /usr/local/var/run/openvswitch/vhost-user-1:/var/run/usvhost -v /dev/hugepages:/dev/hugepages dpdk-app-testpmd testpmd -l 6-7 -n 4 -m 1024 --no-pci --vdev=virtio_user0,path=/var/run/usvhost -- -i --txqflags=0xf00 --disable-hw-vlan --forward-mode=mac --eth-peer=0," + mac_addr
+	//cmd := "docker run -i -t -v /usr/local/var/run/openvswitch/vhost-user-1:/var/run/usvhost -v /dev/hugepages:/dev/hugepages dpdk-app-testpmd testpmd -l 6-7 -n 4 -m 1024 --no-pci --vdev=virtio_user0,path=/var/run/usvhost -- -i --txqflags=0xf00 --disable-hw-vlan --forward-mode=mac --eth-peer=0," + mac_addr
+
+	// run with the auto start
+	//cmd := "docker run -i -t -v /usr/local/var/run/openvswitch/vhost-user-1:/var/run/usvhost -v /dev/hugepages:/dev/hugepages dpdk-app-testpmd testpmd -l 6-7 -n 4 -m 1024 --no-pci --vdev=virtio_user0,path=/var/run/usvhost -- -i -a --txqflags=0xf00 --disable-hw-vlan --forward-mode=mac --eth-peer=0," + mac_addr
+
+	// run with the auto start, txonly mode
+	cmd := "docker run -i -t -v /usr/local/var/run/openvswitch/vhost-user-1:/var/run/usvhost -v /dev/hugepages:/dev/hugepages dpdk-app-testpmd testpmd -l 6-7 -n 4 -m 1024 --no-pci --vdev=virtio_user0,path=/var/run/usvhost -- -i -t --txqflags=0xf00 --disable-hw-vlan --forward-mode=mac --eth-peer=0," + mac_addr
+
 	exec_cmd(cmd)
 }
 

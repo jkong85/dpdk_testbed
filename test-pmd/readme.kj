@@ -1,0 +1,9 @@
+1. Compile the test-pmd code
+2. Create new docker images based on the test-pmd
+3. start the docker with extra parameter:  --i -t  
+
+Note:
+1. VM1: RX,  VM2: TXonly
+
+VM1:  start docker with --i -a
+VM2:  start docker with --i -t .... --eth_peer=....

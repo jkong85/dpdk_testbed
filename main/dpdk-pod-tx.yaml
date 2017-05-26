@@ -15,7 +15,7 @@ spec:
         image: dpdk-app-testpmd:latest
         imagePullPolicy: IfNotPresent
         volumes:
-        - /usr/local/var/run/openvswitch/vhost-user-1:/var/run/usvhost 
+        - /usr/local/var/run/openvswitch/vhost-user-0:/var/run/usvhost 
         - /dev/hugepages:/dev/hugepages 
         command:
         args: 

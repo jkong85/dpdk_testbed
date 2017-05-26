@@ -20,7 +20,7 @@ spec:
         command:
         args: 
         ports:
-        - containerPort: 80
+        - containerPort: 81
         resources:
           limits:
             cpu: 100m

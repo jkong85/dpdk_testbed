@@ -1,0 +1,55 @@
+Ref:
+1): http://docs.openvswitch.org/en/latest/howto/dpdk/
+
+============================================
+pmd thread stat:
+        ovs-appctl dpif-netdev/pmd-stats-show
+
+clear previous stats:
+        ovs-appctl dpif-netdev/pmd-stats-clear
+
+show port/rxq assignment: 
+        ovs-appctl dpif-netdev/pmd-rxq-show
+
+===========================================
+
+ovs-appctl fdb/show br0
+
+// show port statiscis
+    ovs-ofctl dump-ports br0
+
+// show ports
+    ovs-ofctl show br0
+
+    ovs-appctl fdb/show br0
+
+    ovs-vsctl list-ports br0
+    
+    ovs-vsctl list interface dpdkport0
+    
+    ovs-ofctl dump-flows br0
+    
+    ovs-ofctl del-flows br0
+    
+    ovs-appctl dpif/dump-flows br0
+
+============================================
+To config the Qos policy on OVS-DPDK
+
+// limit the egress transmission rate of the port to ~1,000,000 packets per second:
+
+    ovs-vsctl set port vhost-user-1 qos=@newqos -- \
+        --id=@newqos create qos type=egress-policer other-config:cir=46000000 other-config:cbs=2048
+    
+    ovs-appctl -t ovs-vswitchd qos/show vhost-user-1
+    
+    ovs-vsctl destroy QoS vhost-user-1 -- clear Port vhost-user-1 qos
+
+// limit the reception rate of the port to ~1,000,000 packets per second
+
+    ovs-vsctl set interface vhost-user-1 ingress_policing_rate=368000 ingress_policing_burst=1000
+
+    ovs-vsctl list interface vhost-user-1
+
+    ovs-vsctl set interface vhost-user-1 ingress_policing_rate=0
+

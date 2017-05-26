@@ -1,0 +1,15 @@
+docker run -i -t -v /usr/local/var/run/openvswitch/vhost-user-1:/var/run/usvhost -v /dev/hugepages:/dev/hugepages dpdk-app-testpmd 
+
+docker run -i -t -v /usr/local/var/run/openvswitch/vhost-user-1:/var/run/usvhost -v /dev/hugepages:/dev/hugepages -v /usr/src/dpdk-stable-16.11.1/x86_64-native-linuxapp-gcc:/home/dpdk/x86_64-native-linuxapp-gcc mydpdk
+
+testpmd -l 0-1 -n 4 -m 1024 --no-pci --vdev=virtio_user0,path=/var/run/usvhost -- -i --txqflags=0xf00 --disable-hw-vlan
+
+ovs-vsctl add-br br0 -- set bridge br0 datapath_type=netdev &
+
+ovs-vsctl add-port br0 dpdkport0 -- set Interface dpdkport0 type=dpdk options:dpdk-devargs=0000:00:08.0 &
+
+ovs-vsctl add-port br0 dpdkport1 -- set Interface dpdkport1 type=dpdk options:dpdk-devargs=0000:00:09.0 &
+
+ovs-vsctl add-port br0 vhost-user-1 -- set Interface vhost-user-1 type=dpdkvhostuser & 
+
+ovs-vsctl add-port br0 vhost-user-2 -- set Interface vhost-user-2 type=dpdkvhostuser  &

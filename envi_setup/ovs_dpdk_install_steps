@@ -1,0 +1,216 @@
+Version: 
+Host: Ubuntu 16.04
+DPDK 16.1.1 (LTS) : http://fast.dpdk.org/rel/dpdk-16.11.1.tar.xz
+OVS  2.7.0 : http://openvswitch.org/releases/openvswitch-2.7.0.tar.gz
+
+Prerequise:
+apt-get install openssh-server -y
+apt-get install python-six -y
+apt-get install dh-autoreconf -y
+apt-get install clang-3.8 -y
+apt-get install libfuse-dev -y
+apt-get install fuse -y
+apt-get install docker.io -y
+
+Steps:
+1. Start the empty ubuntu 16.04, dump the xml
+    a, virsh list
+    b, virsh dumpxml 63 > dpdk_ovs_install.xml
+    c, add 1Gb hugepage support in dpdk_ovs_install.xml:
+        <cpu mode='custom' match='exact'>
+            <model fallback='allow'>Haswell-noTSX</model>
+            ....
+            <feature name='pdpe1gb'/>
+            <feature policy='require' name='pdpe1gb'/>
+            ....
+        </cpu>
+    d, start KVM by *.xml
+        virsh create dpdk_ovs_install.xml
+    e, check the cpu support pdpe1gb
+        lscpu | grep pdpe1gb 
+
+2. 1Gb hugepage support and VFIO support
+    a, In /etc/default/grub, add:  (make sure it's 1G bit or the total mem is less the VM's total memory??? Need to check later)
+            GRUB_CMDLINE_LINUX="default_hugepagesz=1G hugepagesz=1G hugepages=12 hugepagesz=2M hugepages=2048 iommu=pt intel_iommu=on isolcpus=1-4,6-8"
+    b, then:
+            grub-mkconfig -o /boot/grub/grub.cfg
+    c, shutdown VM 
+    d, start the VM by xml (guarantee the 1GB hugepage)
+            virsh create dpdk_ovs_install.xml
+
+
+    Another way is to allocate the hugepage in runtime:
+    a, sudo touch /etc/sysctl.d/hugepages.conf
+    a, echo 'vm.nr_hugepages=1048576' | sudo tee --append /etc/sysctl.d/hugepages.conf
+    b, sudo sysctl -w vm.nr_hugepages=10
+    c, sudo mkdir -p /dev/hugepages
+    d, sudo mount -t hugetlbfs none /dev/hugepages``
+
+    Then we can check the configuration by the following cmd:
+            dmesg | grep -e DMAR -e IOMMU
+            cat /proc/cmdline | grep iommu=pt
+            cat /proc/cmdline | grep intel_iommu=on
+            grep Huge /proc/meminfo
+
+3, Install DPDK:
+            cd /usr/src/
+            wget http://fast.dpdk.org/rel/dpdk-16.11.1.tar.xz
+            tar xf dpdk-16.11.1.tar.xz
+            export DPDK_DIR=/usr/src/dpdk-stable-16.11.1
+            cd $DPDK_DIR
+            
+            export DPDK_TARGET=x86_64-native-linuxapp-gcc
+            export DPDK_BUILD=$DPDK_DIR/$DPDK_TARGET
+            make install T=$DPDK_TARGET DESTDIR=install
+
+4. setup DPDK device:
+    a, add UIO:
+            modprobe uio
+            insmod $DPDK_BUILD/kmod/igb_uio.ko
+
+    b, bind network device to igb_uio: 
+            $DPDK_DIR/tools/dpdk-devbind.py --status
+
+            ifconfig ens8 down
+            $DPDK_DIR/tools/dpdk-devbind.py --bind=igb_uio 0000:00:08.0
+
+            ifconfig ens9 down
+            $DPDK_DIR/tools/dpdk-devbind.py --bind=igb_uio 0000:00:09.0
+
+5, setup OVS:
+    a, install ovs:
+            cd ~/Downloads
+            wget http://openvswitch.org/releases/openvswitch-2.7.0.tar.gz
+            tar -xf openvswitch-2.7.0.tar.gz
+            cd ~/Downloads/openvswitch-2.7.0/
+            ./boot.sh
+            ./configure --with-dpdk=$DPDK_BUILD
+            make
+            make install
+
+    b, start the server:        
+            rm /usr/local/etc/openvswitch/conf.db
+            rm /usr/local/var/run/openvswitch/*
+
+            ovsdb-tool create /usr/local/etc/openvswitch/conf.db \
+                    vswitchd/vswitch.ovsschema
+            
+            ovsdb-server --remote=punix:/usr/local/var/run/openvswitch/db.sock \
+                    --remote=db:Open_vSwitch,Open_vSwitch,manager_options \
+                    --private-key=db:Open_vSwitch,SSL,private_key \
+                    --certificate=db:Open_vSwitch,SSL,certificate \
+                    --bootstrap-ca-cert=db:Open_vSwitch,SSL,ca_cert \
+                    --pidfile --detach --log-file
+
+    c, start the vswitchd:       
+            export DB_SOCK=/usr/local/var/run/openvswitch/db.sock
+            ovs-vsctl --no-wait set Open_vSwitch . other_config:dpdk-init=true
+            ovs-vswitchd unix:$DB_SOCK --pidfile --detach
+
+       some configs is shown in : http://docs.openvswitch.org/en/latest/intro/install/dpdk/, e.g.:
+
+            ovs-vsctl --no-wait set Open_vSwitch . \
+                other_config:dpdk-socket-mem="1024,0"
+
+            ovs-vsctl set Open_vSwitch . other_config:pmd-cpu-mask=0x3
+
+6, Validate
+    a, check the device bind:
+            $DPDK_DIR/tools/dpdk-devbind.py --status
+
+    b, add bridge and dpdk port:
+            ovs-vsctl add-br br0 -- set bridge br0 datapath_type=netdev
+
+            ovs-vsctl add-port br0 dpdkport0 -- set Interface dpdkport0 \
+                type=dpdk options:dpdk-devargs=0000:00:08.0
+
+            ovs-vsctl add-port br0 dpdkport1 -- set Interface dpdkport1 \
+                type=dpdk options:dpdk-devargs=0000:00:09.0
+
+            ovs-vsctl add-port br0 vhost-user-1 -- set Interface vhost-user-1 type=dpdkvhostuser  
+
+            ovs-vsctl add-port br0 vhost-user-2 -- set Interface vhost-user-2 type=dpdkvhostuser  
+
+    c, htop to check the cpu-bind
+
+Ref:
+1) http://docs.openvswitch.org/en/latest/intro/install/dpdk/
+2) http://docs.openvswitch.org/en/latest/intro/install/general/#general-building
+3) http://openvswitch.org/support/dist-docs-2.5/INSTALL.DPDK.md.html 
+4) http://paste.ubuntu.com/17581296/
+
+==================================================
+
+Following is the steps for the container-dpdk:
+    a, cd /usr/src/dpdk-stable-16.11.1
+    a, create Dockerfile
+    a, cat Dockerfile
+            FROM ubuntu:latest
+            WORKDIR /usr/src/dpdk-stable-16.11.1
+            COPY . /usr/src/dpdk-stable-16.11.1
+            ENV PATH "$PATH:/usr/src/dpdk-stable-16.11.1/x86_64-native-linuxapp-gcc/app/"
+    b, build docker
+            docker build -t dpdk-app-testpmd .
+
+Docker startup:
+            docker run -i -t -v /usr/local/var/run/openvswitch/vhost-user-1:/var/run/usvhost \
+                -v /dev/hugepages:/dev/hugepages \
+                dpdk-app-testpmd testpmd -l 6-7 -n 4 -m 1024 --no-pci \
+                --vdev=virtio_user0,path=/var/run/usvhost \
+                -- -i --txqflags=0xf00 --disable-hw-vlan
+
+            // or run with the specif mac address
+            docker run -i -t -v /usr/local/var/run/openvswitch/vhost-user-1:/var/run/usvhost \
+                -v /dev/hugepages:/dev/hugepages \
+                dpdk-app-testpmd testpmd -l 6-7 -n 4 -m 1024 --no-pci \
+                --vdev=virtio_user0,path=/var/run/usvhost \
+                -- -i --txqflags=0xf00 --disable-hw-vlan \
+                --eth-peer=0,d2:d8:c7:39:3a:83
+
+
+
+            docker run -i -t -v /usr/local/var/run/openvswitch/vhost-user-2:/var/run/usvhost \
+                -v /dev/hugepages:/dev/hugepages \
+                dpdk-app-testpmd testpmd -l 3-4 -n 4 -m 1024 --no-pci \
+                --vdev=virtio_user0,path=/var/run/usvhost \
+                -- -i --txqflags=0xf00 --disable-hw-vlan
+
+Ref: 
+1) http://dpdk.org/doc/guides/howto/virtio_user_for_container_networking.html
+
+
+===================================================
+If reuse this VM:
+
+clean the ovs:
+        rm /usr/local/etc/openvswitch/conf.db
+        rm /usr/local/var/run/openvswitch/*
+
+===================================================
+Problem 1): 
+# Install and bind UIO interface 
+            modprobe uio
+            insmod $DPDK_BUILD/kmod/igb_uio.ko
+    if there is error:
+            insmod: ERROR: could not insert module ../dpdk-2.0.0/x86_64-ivshmem-linuxapp-gcc/kmod/igb_uio.ko: Invalid module format 
+
+    Reason:     
+        the UIO modinfo is not the same with kernal version
+    Solution: 
+        rebuild the DPDK by following:
+
+            export DPDK_DIR=/usr/src/dpdk-stable-16.11.1
+            cd $DPDK_DIR
+            export DPDK_TARGET=x86_64-native-linuxapp-gcc
+            export DPDK_BUILD=$DPDK_DIR/$DPDK_TARGET
+            make install T=$DPDK_TARGET DESTDIR=install
+
+Problem 2): Testpmd (on container) start but no packet sent out
+    Reason: is it running in txonly fwd mode??
+    Solution: 
+            set fwd txonly
+
+Problem 2): OVS cannot learn the mac from container
+    Reason: OVS is running in flow mode??
+    Solution: 
+            ovs-ofctl add-flow br0 action=NORMAL

@@ -3,6 +3,9 @@ sysctl -w vm.nr_hugepages=8
 mkdir -p /dev/hugepages
 mount -t hugetlbfs none /dev/hugepages
 
+mv /usr/src/dpdk-stable-16.11.1/app/test-pmd/ /usr/src/dpdk-stable-16.11.1/app/test-pmd-bak
+cp -rf ../../test-pmd /usr/src/dpdk-stable-16.11.1/app/test-pmd
+
 pushd $DPDK_DIR
 make install T=$DPDK_TARGET DESTDIR=install
 modprobe uio

@@ -1,0 +1,221 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+# Require the reboot plugin.
+# require './vagrant-provision-reboot-plugin'
+
+$install_upstart = <<SCRIPT
+  sudo rm /var/lib/dpkg/lock &&
+  sudo dpkg --configure -a &&
+
+  sudo apt-get update &&
+  sudo apt-get install -y upstart-sysv &&
+  sudo update-initramfs -u &&
+  #sudo apt-get purge -y systemd &&
+  sudo reboot 
+SCRIPT
+
+$preinstall = <<SCRIPT
+    sudo touch /etc/sysctl.d/hugepages.conf
+    echo 'vm.nr_hugepages=1048576' | sudo tee --append /etc/sysctl.d/hugepages.conf
+    sudo sysctl -w vm.nr_hugepages=8
+    sudo mkdir -p /dev/hugepages
+    sudo mount -t hugetlbfs none /dev/hugepages``
+
+    apt-get install openssh-server -y
+    apt-get install python-six -y
+    apt-get install dh-autoreconf -y
+    apt-get install clang-3.8 -y
+    apt-get install libfuse-dev -y
+    apt-get install fuse -y
+SCRIPT
+
+$postinstall = <<SCRIPT
+  #Fix overlay mode connection issue
+  #iptables -I INPUT -p udp --dport 4789 -j ACCEPT
+  #iptables -I INPUT  -p 47  -j ACCEPT
+  #Fix bridge mode connection issue
+  sudo iptables --policy FORWARD ACCEPT
+  sudo iptables-save -c > /etc/iptables.rules
+  #below is hacky - but xenial+upstart is really headache
+  sudo sed -i '/exit 0/i \
+iptables-restore < /etc/iptables.rules \
+exit 0' /etc/rc.local
+SCRIPT
+
+$dpdk = <<SCRIPT
+    cd /usr/src/
+    wget http://fast.dpdk.org/rel/dpdk-16.11.1.tar.xz
+    tar xf dpdk-16.11.1.tar.xz
+    # Need to export all the env once
+    export DPDK_DIR=/usr/src/dpdk-stable-16.11.1
+    export DPDK_TARGET=x86_64-native-linuxapp-gcc
+    export DPDK_BUILD=$DPDK_DIR/$DPDK_TARGET
+    cd $DPDK_DIR
+    make install T=$DPDK_TARGET DESTDIR=install
+    # after make, insert the mode
+    modprobe uio
+    insmod $DPDK_BUILD/kmod/igb_uio.ko
+SCRIPT
+
+$ovs = <<SCRIPT
+    cd /usr/src/
+    wget http://openvswitch.org/releases/openvswitch-2.7.0.tar.gz
+    tar -xf openvswitch-2.7.0.tar.gz
+    cd /usr/src/openvswitch-2.7.0/
+    export DPDK_DIR=/usr/src/dpdk-stable-16.11.1
+    export DPDK_TARGET=x86_64-native-linuxapp-gcc
+    export DPDK_BUILD=$DPDK_DIR/$DPDK_TARGET
+    ./boot.sh
+    ./configure --with-dpdk=$DPDK_BUILD
+    make
+    make install
+SCRIPT
+
+$ovsstart = <<SCRIPT
+	#start the server
+	rm /usr/local/etc/openvswitch/conf.db
+    rm /usr/local/var/run/openvswitch/*
+    cd /usr/src/openvswitch-2.7.0/
+    ovsdb-tool create /usr/local/etc/openvswitch/conf.db vswitchd/vswitch.ovsschema
+    ovsdb-server --remote=punix:/usr/local/var/run/openvswitch/db.sock --remote=db:Open_vSwitch,Open_vSwitch,manager_options --private-key=db:Open_vSwitch,SSL,private_key --certificate=db:Open_vSwitch,SSL,certificate --bootstrap-ca-cert=db:Open_vSwitch,SSL,ca_cert --pidfile --detach --log-file
+    #start vswitchd
+	export DB_SOCK=/usr/local/var/run/openvswitch/db.sock
+    ovs-vsctl --no-wait set Open_vSwitch . other_config:dpdk-init=true
+    ovs-vswitchd unix:$DB_SOCK --pidfile --detach &
+	ovs-vsctl --no-wait set Open_vSwitch . other_config:dpdk-socket-mem="1024,0"
+    ovs-vsctl set Open_vSwitch . other_config:pmd-cpu-mask=0x3
+SCRIPT
+
+$dockerbuild = <<SCRIPT
+    cd /home/
+    echo "FROM ubuntu:latest" >> Dockerfile
+    echo "WORKDIR /home/dpdk" >> Dockerfile
+    #echo "COPY . /usr/src/dpdk-stable-16.11.1" >> Dockerfile
+    echo "ENV PATH \"\$PATH:/usr/src/dpdk-stable-16.11.1/x86_64-native-linuxapp-gcc/app/\"" >> Dockerfile 
+    # build docker 
+    docker build -t dpdk .
+SCRIPT
+
+$interfaces = <<SCRIPT
+  echo " change the owner of /etc/network/interfaces"
+  sudo chown ubuntu:ubuntu /etc/network/interfaces
+
+  echo "Add the private network IP addresses permanently"
+    cat <<EOF >> /etc/network/interfaces
+      auto eth1
+      iface eth1 inet static
+      address ${1}
+      netmask 255.255.255.0
+EOF
+
+    cat <<EOF >> /etc/network/interfaces
+      auto eth2
+      iface eth2 inet static
+      address ${2}
+      netmask 255.255.255.0
+EOF
+SCRIPT
+
+$NUM_CPUS = (ENV['NUM_CPUS'] || 1).to_i
+$MEMORY = (ENV['MEMORY'] || 20480).to_i
+
+$IFACE = (ENV['BRIDGE_IFACE'] || "eth0")
+$num_node = (ENV['NUM_NODES'] || 1).to_i
+$mgmt_ip_base = "192.168.56."
+$node_ip_base = "192.168.57."
+$first_ip_suffix = "11"
+$mgmt_ips = $num_node.times.collect { |n| $mgmt_ip_base + "#{$first_ip_suffix.to_i + n }"}
+$node_ips = $num_node.times.collect { |n| $node_ip_base + "#{$first_ip_suffix.to_i + n }"}
+
+Vagrant.configure("2") do |config|
+  #config.vm.box_url = "http://10.145.240.145/custom_box.box"
+  config.vm.box = "huge_pages_1G"
+
+  #use common public key
+  config.ssh.insert_key = false
+  config.ssh.private_key_path = File.expand_path('~/id_rsa', __FILE__)
+  #config.ssh.private_key_path = File.expand_path('~/.ssh/id_rsa')
+  config.ssh.forward_agent = true
+  config.ssh.username = 'ubuntu'
+
+  config.vm.provider "libvirt" do |libvirt|
+    libvirt.driver = "kvm"
+    libvirt.host = 'localhost'
+    libvirt.uri = 'qemu:///system'
+    libvirt.memory = $MEMORY
+    libvirt.cpus = $NUM_CPUS
+    #config.vm.synced_folder '.', '/home/vagrant/iCan', type: "rsync"
+  end
+  
+  $num_node.times do |i|
+    node_vm_name = "ican-#{i}"
+
+    config.vm.provision "shell",
+      run: "always",
+      inline: "echo testing provision"
+
+    config.vm.define node_vm_name do |node|
+
+      node.vm.hostname = node_vm_name
+
+      mgmt_ip = $mgmt_ips[i]
+      node_ip = $node_ips[i]
+
+      node.vm.network :private_network, :ip => "#{mgmt_ip}", auto_config: false
+      node.vm.network :private_network, :ip => "#{node_ip}", auto_config: false
+
+      # static ip
+      node.vm.provision "shell",
+      run: "always",
+      inline: "ifconfig eth1 #{mgmt_ip} netmask 255.255.255.0 up"
+
+      node.vm.provision "shell",
+      run: "always",
+      inline: "ifconfig eth2 #{node_ip} netmask 255.255.255.0 up"
+
+      #node.vm.provision "shell",
+      #run: "always",
+      #inline: "sudo apt-get install -y docker-engine"
+
+      #node.vm.provision "bootstrap", type: "shell", run: "once", privileged: true, inline: $bootstrap
+      #node.vm.provision "postinstall", type: "shell", run: "once", privileged: true, inline: $postinstall
+      node.vm.provision "shell", run: "always", inline: $interfaces, args: "#{mgmt_ip} #{node_ip}"
+      #node.vm.provision "shell", run: "always", inline: $install_upstart
+
+      node.vm.provision "shell" do |s|
+        ssh_pub_key = File.readlines("#{Dir.home}/.ssh/id_rsa.pub").first.strip
+        s.inline = <<-SHELL
+          echo #{ssh_pub_key} > /home/ubuntu/.ssh/authorized_keys
+	  sudo mkdir -p /root/.ssh
+	  sudo touch /root/.ssh/authorized_keys
+          echo #{ssh_pub_key} > /root/.ssh/authorized_keys
+        SHELL
+      end
+
+      #node.vm.synced_folder "../../", "/tmp/ican-plus", type: 'rsync'
+
+      node.vm.provision "shell", inline: <<-EOC
+        #iso stuff
+        #cp -rf /tmp/ican-plus/plus/iso/* /opt/
+
+        #Bridge mode needs following
+        echo '
+	    net.bridge.bridge-nf-call-ip6tables = 0
+	    net.bridge.bridge-nf-call-iptables = 0
+	    net.bridge.bridge-nf-call-arptables = 0' >> /etc/sysctl.conf
+
+        #sysctl net.bridge.bridge-nf-call-ip6tables=0
+        #sysctl net.bridge.bridge-nf-call-iptables=0
+        #sysctl net.bridge.bridge-nf-call-arptables=0
+        EOC
+
+      node.vm.provision "preinstall", type: "shell", run: "once", privileged: true, inline: $preinstall
+      node.vm.provision "dpdk", type: "shell", run: "once", privileged: true, inline: $dpdk
+      node.vm.provision "ovs", type: "shell", run: "once", privileged: true, inline: $ovs
+      node.vm.provision "ovsstart", type: "shell", run: "once", privileged: true, inline: $ovsstart
+      node.vm.provision "dockerbuild", type: "shell", run: "once", privileged: true, inline: $dockerbuild
+
+    end
+  end
+end
